@@ -4,3 +4,4 @@
 *.json
 
 venv
+.env
