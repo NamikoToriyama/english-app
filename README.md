@@ -17,6 +17,7 @@ pip freeze > requirements.txt
 ```
 export GOOGLE_APPLICATION_CREDENTIALS="torichan-english-study-tori-9f676c330598.json"
 python app.py
+gunicorn app:app --bind 0.0.0.0:8080 --workers 4
 ```
 
 ## How to create sample file

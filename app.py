@@ -1,83 +1,78 @@
 import json
 import os
+import logging
 
-import requests
-import vertexai
 from dotenv import load_dotenv
-from google.cloud import speech
-from vertexai.generative_models import GenerativeModel
+from flask import Flask, abort, request
+from linebot import WebhookHandler
+from linebot.v3 import WebhookHandler
+from linebot.v3.exceptions import InvalidSignatureError
+
 
 from const import MODEL, PROJECT_ID, PROMPT, URL
+from lib import transcribe_by_speech_to_text, enhance_text_with_gemini, convert_to_wav, send_message, write_contents, output_file_name
 
-# .envファイルを読み込む
+app = Flask(__name__)
+
+# ロギングの設定
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
-def transcribe_by_speech_to_text(audio_file: str) -> str:
-    client = speech.SpeechClient()
+handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
 
-    with open(audio_file, "rb") as f:
-        audio_content = f.read()
+def audio_main(message_id: str):
+    ### audioの取得
+    write_contents(message_id)
 
-    audio = speech.RecognitionAudio(content=audio_content)
-    config = speech.RecognitionConfig(
-        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-        sample_rate_hertz=16000,
-        language_code="en-US",
-    )
+    ### wavに変換
+    convert_to_wav()
 
-    response = client.recognize(config=config, audio=audio)
-
-    speech_script = "";
-    for result in response.results:
-        speech_script += result.alternatives[0].transcript
-    
-    return speech_script
-
-
-def enhance_text_with_gemini(speech_script: str):
-    vertexai.init(project=PROJECT_ID, location="us-central1")
-    model = GenerativeModel(MODEL)
-    prompt = f"{PROMPT} 文章: {speech_script}"
-    response = model.generate_content(prompt)
-    return response.text
-
-
-def send_message_to_line(gemini_text: str):
-    line_api_key = os.getenv('LINE_API_KEY')
-    user_id = os.getenv('LINE_MY_USER_ID')
-
-    payload = json.dumps({
-    "to": user_id,
-    "messages": [
-        {
-        "type": "text",
-        "text": gemini_text
-        }
-    ]
-    })
-    headers = {
-    'Content-Type': 'application/json',
-    'Authorization': f'Bearer {line_api_key}'
-    }
-
-    response = requests.request("POST", URL, headers=headers, data=payload)
-    print(response.status_code)
-    return response.status_code
-
-  
-def main():
     ### 音声を文字にする
-    filepath = '/Users/torinamiko/MyProject/english-app/output.wav'
-    speech_script = transcribe_by_speech_to_text(filepath)
+    speech_script = transcribe_by_speech_to_text(output_file_name)
+    send_message(speech_script)
 
     ### GeminiAIでtextを添削する
     gemini_response = enhance_text_with_gemini(speech_script)
-    print(gemini_response)
+    send_message(gemini_response)
 
-    ### LINEに添削したTextを送る
-    status_code = send_message_to_line(gemini_response)
-    if status_code != 200:
-        print("Error happens")
 
-main()
+@app.route("/", methods=['POST', 'GET'])
+def main():
+    if request.method == 'GET':
+        return  "Get hello"
+    
+    event = json.loads(request.get_data())
+    message_data = event['events'][0]
 
+    if message_data['message']['type'] == "text": 
+        res_message = f"あなたは{message_data['message']['text']}と送ってきましたね！"
+        send_message(res_message)
+    elif message_data['message']['type'] == "audio": 
+        send_message("audioが送信されました")
+        audio_main(message_data['message']['id'])
+    else:
+        send_message("サポートされていないフォーマットです")
+    
+    return "hello"
+
+
+@app.route("/callback", methods=['POST'])
+def callback():
+    signature = request.headers['X-Line-Signature']
+
+    body = request.get_data(as_text=True)
+    app.logger.info("Request body: " + body)
+
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+
+    return 'OK'
+
+if __name__ == "__main__":
+    # gunicornで起動する場合
+    # gunicorn app:app --bind 0.0.0.0:8080 --workers 4
+    app.run(debug=False, port=8080)
