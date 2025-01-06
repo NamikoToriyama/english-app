@@ -1,7 +1,6 @@
 *.flac
 *.wav
 *.m4a
-*.json
 
 venv
 sample
